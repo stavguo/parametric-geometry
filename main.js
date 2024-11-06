@@ -1,72 +1,130 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { ParametricGeometry } from 'three/examples/jsm/geometries/ParametricGeometry.js';
+import { createNoise2D } from 'simplex-noise';
+import GUI from 'lil-gui';
 
 // Scene setup
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+// Create both cameras
+const orbitCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const snowboarderCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+// Track active camera
+let activeCamera = orbitCamera;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// Add orbit controls
-const controls = new OrbitControls(camera, renderer.domElement);
-camera.position.set(0, 5, 10);
+// Add orbit controls (only for orbit camera)
+const controls = new OrbitControls(orbitCamera, renderer.domElement);
+orbitCamera.position.set(0, 15, 20);
 controls.update();
 
-// Control points for the surface
-const controlPoints = [
-    [[-5, 0, -5], [-2.5, 2, -5], [2.5, -1, -5], [5, 0, -5]],
-    [[-5, 1, -2.5], [-2.5, 3, -2.5], [2.5, 0, -2.5], [5, 1, -2.5]],
-    [[-5, -1, 2.5], [-2.5, 0, 2.5], [2.5, 2, 2.5], [5, -1, 2.5]],
-    [[-5, 0, 5], [-2.5, -2, 5], [2.5, 1, 5], [5, 0, 5]]
-];
+// Initialize noise generator with random seed
+let noise2D = createNoise2D();
 
-// Bernstein polynomial
-function bernstein(n, i, t) {
-    const factorial = (n) => {
-        if (n <= 1) return 1;
-        return n * factorial(n - 1);
-    };
+// Terrain parameters
+const params = {
+    // Overall settings
+    terrainWidth: 20,
+    terrainLength: 20,
+    resolution: 100,
+    baseHeight: 3,
     
-    const combination = factorial(n) / (factorial(i) * factorial(n - i));
-    return combination * Math.pow(t, i) * Math.pow(1 - t, n - i);
+    // Mountains
+    mountainScale: 0.15,
+    mountainHeight: 0.78,
+    
+    // Hills
+    hillScale: 0.4,
+    hillHeight: 0.02,
+    
+    // Rough terrain
+    roughScale: 0.8,
+    roughHeight: 0.05,
+    
+    // Material
+    wireframe: false,
+    flatShading: false,
+    color: '#ffffff',
+
+    // Snowboarder settings
+    snowboarderHeight: 0.5,
+    activeView: 'Orbit View',
+    
+    // Function to regenerate geometry with new seed
+    regenerate: () => {
+        // Create new noise generator with different random seed
+        noise2D = createNoise2D();
+        updateGeometry();
+    }
+};
+
+// Surface function for terrain generation (now returns height for camera positioning)
+function getTerrainHeight(x, z) {
+    // Convert from world coordinates to normalized coordinates
+    const u = (x / params.terrainWidth) + 0.5;
+    const v = (z / params.terrainLength) + 0.5;
+    
+    const mountains = noise2D(x * params.mountainScale, z * params.mountainScale) * params.mountainHeight;
+    const hills = noise2D(x * params.hillScale, z * params.hillScale) * params.hillHeight;
+    const roughness = noise2D(x * params.roughScale, z * params.roughScale) * params.roughHeight;
+    
+    return params.baseHeight + mountains + hills + roughness;
 }
 
-// Surface function using Bézier surface equation
 function surfaceFunction(u, v, target) {
-    const n = controlPoints.length - 1;
-    const m = controlPoints[0].length - 1;
-    
-    let x = 0, y = 0, z = 0;
-    
-    for (let i = 0; i <= n; i++) {
-        for (let j = 0; j <= m; j++) {
-            const factor = bernstein(n, i, u) * bernstein(m, j, v);
-            x += controlPoints[i][j][0] * factor;
-            y += controlPoints[i][j][1] * factor;
-            z += controlPoints[i][j][2] * factor;
-        }
-    }
-    
-    // Add some animated waves
-    const time = Date.now() * 0.001;
-    const waveHeight = 0.5;
-    const waveFreq = 2;
-    y += waveHeight * Math.sin(x * waveFreq + time) * Math.cos(z * waveFreq + time);
-    
+    const x = (u - 0.5) * params.terrainWidth;
+    const z = (v - 0.5) * params.terrainLength;
+    const y = getTerrainHeight(x, z);
     target.set(x, y, z);
 }
 
-// Create parametric surface
-const geometry = new ParametricGeometry(surfaceFunction, 50, 50);
+// Create material and mesh
 const material = new THREE.MeshPhongMaterial({
-    color: 0xffffff,
+    color: params.color,
     side: THREE.DoubleSide,
-    flatShading: false,
+    flatShading: params.flatShading,
+    wireframe: params.wireframe,
     shininess: 50
 });
+
+let geometry = new ParametricGeometry(surfaceFunction, params.resolution, params.resolution);
 const surface = new THREE.Mesh(geometry, material);
+scene.add(surface);
+
+// Setup snowboarder camera position
+const snowboarderPosition = new THREE.Vector3(0, 0, 0); // Center of the terrain
+snowboarderPosition.y = getTerrainHeight(0, 0) + params.snowboarderHeight;
+snowboarderCamera.position.copy(snowboarderPosition);
+snowboarderCamera.rotation.y = Math.PI; // Face forward (down the slope)
+snowboarderCamera.rotation.x = -0.2; // Tilt down slightly
+
+// Add a small marker to show snowboarder position
+const snowboarderMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.2),
+    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+);
+snowboarderMarker.position.copy(snowboarderPosition);
+scene.add(snowboarderMarker);
+
+// Function to update geometry
+function updateGeometry() {
+    if (geometry) {
+        geometry.dispose();
+    }
+    
+    geometry = new ParametricGeometry(surfaceFunction, params.resolution, params.resolution);
+    surface.geometry = geometry;
+    
+    // Update snowboarder height when terrain changes
+    snowboarderPosition.y = getTerrainHeight(snowboarderPosition.x, snowboarderPosition.z) + params.snowboarderHeight;
+    snowboarderCamera.position.copy(snowboarderPosition);
+    snowboarderMarker.position.copy(snowboarderPosition);
+}
 
 // Add lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
@@ -75,38 +133,88 @@ const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
 directionalLight.position.set(5, 10, 5);
 scene.add(directionalLight);
 
-scene.add(surface);
+// Setup GUI
+const gui = new GUI();
+
+// Terrain dimensions folder
+const dimensionsFolder = gui.addFolder('Terrain Dimensions');
+dimensionsFolder.add(params, 'terrainWidth', 10, 50).name('Width').onChange(updateGeometry);
+dimensionsFolder.add(params, 'terrainLength', 10, 50).name('Length').onChange(updateGeometry);
+dimensionsFolder.add(params, 'resolution', 50, 200, 1).name('Resolution').onChange(updateGeometry);
+dimensionsFolder.add(params, 'baseHeight', 0, 10).name('Base Height').onChange(updateGeometry);
+
+// Mountain features folder
+const mountainFolder = gui.addFolder('Mountains');
+mountainFolder.add(params, 'mountainScale', 0.01, 0.5).name('Scale').onChange(updateGeometry);
+mountainFolder.add(params, 'mountainHeight', 0, 10).name('Height').onChange(updateGeometry);
+
+// Hill features folder
+const hillFolder = gui.addFolder('Hills');
+hillFolder.add(params, 'hillScale', 0.1, 1).name('Scale').onChange(updateGeometry);
+hillFolder.add(params, 'hillHeight', 0, 5).name('Height').onChange(updateGeometry);
+
+// Rough terrain folder
+const roughFolder = gui.addFolder('Small Features');
+roughFolder.add(params, 'roughScale', 0.1, 2).name('Scale').onChange(updateGeometry);
+roughFolder.add(params, 'roughHeight', 0, 2).name('Height').onChange(updateGeometry);
+
+// Visual settings folder
+const visualFolder = gui.addFolder('Visual Settings');
+visualFolder.add(params, 'wireframe').onChange(value => {
+    material.wireframe = value;
+});
+visualFolder.add(params, 'flatShading').onChange(value => {
+    material.flatShading = value;
+    material.needsUpdate = true;
+});
+visualFolder.addColor(params, 'color').onChange(value => {
+    material.color.set(value);
+});
+
+const cameraFolder = gui.addFolder('Camera Settings');
+cameraFolder.add(params, 'snowboarderHeight', 0.5, 5)
+    .name('Snowboarder Height')
+    .onChange(() => {
+        snowboarderPosition.y = getTerrainHeight(snowboarderPosition.x, snowboarderPosition.z) + params.snowboarderHeight;
+        snowboarderCamera.position.copy(snowboarderPosition);
+        snowboarderMarker.position.copy(snowboarderPosition);
+    });
+
+// Handle camera switching
+document.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') {
+        activeCamera = (activeCamera === orbitCamera) ? snowboarderCamera : orbitCamera;
+        params.activeView = (activeCamera === orbitCamera) ? 'Orbit View' : 'Snowboarder View';
+        gui.controllers.forEach(controller => controller.updateDisplay());
+    }
+});
+
+// Add regenerate button
+gui.add(params, 'regenerate').name('Regenerate Terrain');
 
 // Animation loop
-let vertices = geometry.attributes.position.array;
-let vertexCount = vertices.length;
-
 function animate() {
     requestAnimationFrame(animate);
     
-    // Update vertex positions
-    const time = Date.now() * 0.001;
-    const waveHeight = 0.5;
-    const waveFreq = 2;
-    
-    for (let i = 0; i < vertexCount; i += 3) {
-        const x = vertices[i];
-        const z = vertices[i + 2];
-        const y = waveHeight * Math.sin(x * waveFreq + time) * Math.cos(z * waveFreq + time);
-        vertices[i + 1] = y;
+    // Only update controls for orbit camera
+    if (activeCamera === orbitCamera) {
+        controls.update();
     }
     
-    geometry.attributes.position.needsUpdate = true;
-    geometry.computeVertexNormals();
-    
-    controls.update();
-    renderer.render(scene, camera);
+    renderer.render(scene, activeCamera);
 }
 
 // Handle window resizing
 window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
+    const aspect = window.innerWidth / window.innerHeight;
+    
+    // Update both cameras
+    orbitCamera.aspect = aspect;
+    orbitCamera.updateProjectionMatrix();
+    
+    snowboarderCamera.aspect = aspect;
+    snowboarderCamera.updateProjectionMatrix();
+    
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
