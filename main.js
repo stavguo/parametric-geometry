@@ -14,18 +14,6 @@ const snowboarderCamera = new THREE.PerspectiveCamera(75, window.innerWidth / wi
 // Track active camera
 let activeCamera = orbitCamera;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
-
-// Add orbit controls (only for orbit camera)
-const controls = new OrbitControls(orbitCamera, renderer.domElement);
-orbitCamera.position.set(0, 15, 20);
-controls.update();
-
-// Initialize noise generator with random seed
-let noise2D = createNoise2D();
-
 // Terrain parameters
 const params = {
     // Overall settings
@@ -53,6 +41,7 @@ const params = {
 
     // Snowboarder settings
     snowboarderHeight: 0.5,
+    cameraPitch: -0.3,
     activeView: 'Orbit View',
 
     // Motion parameters
@@ -66,6 +55,177 @@ const params = {
         updateGeometry();
     }
 };
+
+// Snowboard parameters
+const snowboardParams = {
+    length: 1.6,
+    width: 0.3,
+    thickness: 0.05,
+    bevelSize: 0.02,  // Size of the rounded edges
+    distanceFromCamera: 1.5,
+    tilt: 0, // Side-to-side tilt
+};
+
+function createSnowboard() {
+    const boardShape = new THREE.Shape();
+    // Create rounded rectangle shape for the board
+    const radius = snowboardParams.width / 2;
+    
+    // Draw the shape rotated 90 degrees so length is along Z-axis
+    boardShape.moveTo(-snowboardParams.width / 2 + radius, -snowboardParams.length / 2);
+    boardShape.lineTo(snowboardParams.width / 2 - radius, -snowboardParams.length / 2);
+    boardShape.quadraticCurveTo(
+        snowboardParams.width / 2,
+        -snowboardParams.length / 2,
+        snowboardParams.width / 2,
+        -snowboardParams.length / 2 + radius
+    );
+    boardShape.lineTo(snowboardParams.width / 2, snowboardParams.length / 2 - radius);
+    boardShape.quadraticCurveTo(
+        snowboardParams.width / 2,
+        snowboardParams.length / 2,
+        snowboardParams.width / 2 - radius,
+        snowboardParams.length / 2
+    );
+    boardShape.lineTo(-snowboardParams.width / 2 + radius, snowboardParams.length / 2);
+    boardShape.quadraticCurveTo(
+        -snowboardParams.width / 2,
+        snowboardParams.length / 2,
+        -snowboardParams.width / 2,
+        snowboardParams.length / 2 - radius
+    );
+    boardShape.lineTo(-snowboardParams.width / 2, -snowboardParams.length / 2 + radius);
+    boardShape.quadraticCurveTo(
+        -snowboardParams.width / 2,
+        -snowboardParams.length / 2,
+        -snowboardParams.width / 2 + radius,
+        -snowboardParams.length / 2
+    );
+
+    const extrudeSettings = {
+        steps: 1,
+        depth: snowboardParams.thickness,
+        bevelEnabled: true,
+        bevelThickness: 0.02,
+        bevelSize: 0.02,
+        bevelSegments: 3
+    };
+
+    const geometry = new THREE.ExtrudeGeometry(boardShape, extrudeSettings);
+
+    // Rotate the geometry to lay flat
+    geometry.rotateX(-Math.PI / 2);
+
+    const material = new THREE.MeshPhongMaterial({
+        color: 0x2244ff,
+        shininess: 100,
+        flatShading: false
+    });
+
+    return new THREE.Mesh(geometry, material);
+}
+
+const snowboard = createSnowboard();
+scene.add(snowboard);
+
+function updateSnowboarderView() {
+    // Update camera position and rotation
+    snowboarderPosition.y = getTerrainHeight(snowboarderPosition.x, snowboarderPosition.z) + params.snowboarderHeight;
+    snowboarderCamera.position.copy(snowboarderPosition);
+    snowboarderCamera.rotation.set(params.cameraPitch, Math.PI, 0);
+    snowboarderMarker.position.copy(snowboarderPosition);
+
+    // Calculate board center position
+    const boardOffset = new THREE.Vector3(0, 0, -snowboardParams.distanceFromCamera);
+    boardOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    const boardCenter = snowboarderPosition.clone().add(boardOffset);
+
+    // Get primary directions relative to board orientation
+    const forward = new THREE.Vector3(0, 0, 1);
+    forward.applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    const right = new THREE.Vector3(1, 0, 0);
+
+    // Calculate the true bottom points, accounting for thickness and bevel
+    const halfLength = snowboardParams.length / 2;
+    const halfWidth = snowboardParams.width / 2;
+    const bottomOffset = -(snowboardParams.thickness + snowboardParams.bevelSize) / 2;
+    const down = new THREE.Vector3(0, bottomOffset, 0);
+    
+    // Add a small outward offset to account for rounded edges
+    const edgeOffset = snowboardParams.bevelSize;
+    
+    const sampleOffsets = [
+        // Front-right bottom corner (including bevel offset)
+        forward.clone().multiplyScalar(halfLength + edgeOffset)
+            .add(right.clone().multiplyScalar(halfWidth + edgeOffset))
+            .add(down),
+        
+        // Front-left bottom corner
+        forward.clone().multiplyScalar(halfLength + edgeOffset)
+            .add(right.clone().multiplyScalar(-(halfWidth + edgeOffset)))
+            .add(down),
+        
+        // Back-right bottom corner
+        forward.clone().multiplyScalar(-(halfLength + edgeOffset))
+            .add(right.clone().multiplyScalar(halfWidth + edgeOffset))
+            .add(down),
+        
+        // Back-left bottom corner
+        forward.clone().multiplyScalar(-(halfLength + edgeOffset))
+            .add(right.clone().multiplyScalar(-(halfWidth + edgeOffset)))
+            .add(down),
+        
+        // Center bottom point
+        down
+    ];
+
+    // Sample heights at all five points
+    const sampleHeights = sampleOffsets.map(offset => {
+        const samplePos = boardCenter.clone().add(offset);
+        return getTerrainHeight(samplePos.x, samplePos.z);
+    });
+
+    // Find highest sampled height and add back the bottom offset to position the center correctly
+    const maxHeight = Math.max(...sampleHeights) - bottomOffset;
+    
+    // Position board center
+    boardCenter.y = maxHeight;
+    snowboard.position.copy(boardCenter);
+
+    // Calculate terrain normal at center point for overall orientation
+    const epsilon = 0.1;
+    const centerHeight = sampleHeights[4]; // Use the sampled center height
+    const forwardHeight = getTerrainHeight(boardCenter.x, boardCenter.z + epsilon);
+    const rightHeight = getTerrainHeight(boardCenter.x + epsilon, boardCenter.z);
+    
+    const forwardSlope = new THREE.Vector3(0, forwardHeight - centerHeight, epsilon).normalize();
+    const rightSlope = new THREE.Vector3(epsilon, rightHeight - centerHeight, 0).normalize();
+    const normal = rightSlope.cross(forwardSlope).normalize();
+
+    // Apply terrain-based orientation
+    const alignMatrix = new THREE.Matrix4().lookAt(
+        new THREE.Vector3(0, 0, 0),
+        forwardSlope,
+        normal
+    );
+    snowboard.quaternion.setFromRotationMatrix(alignMatrix);
+    
+    // Apply side tilt last
+    snowboard.rotateZ(snowboardParams.tilt);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Add orbit controls (only for orbit camera)
+const controls = new OrbitControls(orbitCamera, renderer.domElement);
+orbitCamera.position.set(0, 15, 20);
+controls.update();
+
+// Initialize noise generator with random seed
+let noise2D = createNoise2D();
+
 
 // Add time offset for motion
 let timeOffset = 0;
@@ -128,6 +288,9 @@ function updateGeometry() {
     snowboarderPosition.y = getTerrainHeight(snowboarderPosition.x, snowboarderPosition.z) + params.snowboarderHeight;
     snowboarderCamera.position.copy(snowboarderPosition);
     snowboarderMarker.position.copy(snowboarderPosition);
+
+    // Add snowboard update
+    updateSnowboarderView();
 }
 
 // Add lighting
@@ -169,11 +332,10 @@ motionFolder.add(params, 'isMoving').name('Toggle Motion');
 const cameraFolder = gui.addFolder('Camera Settings');
 cameraFolder.add(params, 'snowboarderHeight', 0.5, 5)
     .name('Snowboarder Height')
-    .onChange(() => {
-        snowboarderPosition.y = getTerrainHeight(snowboarderPosition.x, snowboarderPosition.z) + params.snowboarderHeight;
-        snowboarderCamera.position.copy(snowboarderPosition);
-        snowboarderMarker.position.copy(snowboarderPosition);
-    });
+    .onChange(updateSnowboarderView);
+cameraFolder.add(params, 'cameraPitch', -0.8, 0.8)
+    .name('Camera Pitch')
+    .onChange(updateSnowboarderView);
 
 const visualFolder = gui.addFolder('Visual Settings');
 visualFolder.add(params, 'wireframe').onChange(value => {
@@ -187,9 +349,17 @@ visualFolder.addColor(params, 'color').onChange(value => {
     material.color.set(value);
 });
 
+const snowboardFolder = gui.addFolder('Snowboard Settings');
+snowboardFolder.add(snowboardParams, 'distanceFromCamera', 0.5, 3)
+    .name('Distance from Camera')
+    .onChange(updateSnowboarderView);
+snowboardFolder.add(snowboardParams, 'tilt', -0.5, 0.5)
+    .name('Board Tilt')
+    .onChange(updateSnowboarderView);
+
 // Handle camera switching
 document.addEventListener('keydown', (event) => {
-    if (event.code === 'Space') {
+    if (event.code === 'KeyC') {
         activeCamera = (activeCamera === orbitCamera) ? snowboarderCamera : orbitCamera;
         params.activeView = (activeCamera === orbitCamera) ? 'Orbit View' : 'Snowboarder View';
         gui.controllers.forEach(controller => controller.updateDisplay());
@@ -220,6 +390,9 @@ function animate() {
     if (activeCamera === orbitCamera) {
         controls.update();
     }
+
+    // Update snowboard position and rotation
+    updateSnowboarderView();
     
     renderer.render(scene, activeCamera);
 }
