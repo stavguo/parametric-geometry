@@ -4,83 +4,6 @@ import { ParametricGeometry } from 'three/examples/jsm/geometries/ParametricGeom
 import { createNoise2D } from 'simplex-noise';
 import GUI from 'lil-gui';
 
-// Enhanced vertex shader with proper transform and normals
-const vertexShader = `
-varying vec2 vUv;
-varying vec3 vNormal;
-varying vec3 vViewPosition;
-
-uniform float curvature;
-uniform float curvatureDistance;
-
-void main() {
-    vUv = uv;
-    
-    // Copy positions and apply curve
-    vec3 pos = position;
-    float dist = max(0.0, pos.z + curvatureDistance);
-    pos.y -= pow(dist * curvature, 2.0);
-    
-    // Transform position into view space
-    vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
-    vViewPosition = -mvPosition.xyz;
-    
-    // Calculate normal by looking at nearby vertices
-    // This gives us curved normals for proper lighting
-    vec3 tangent = normalize(vec3(1.0, 
-        2.0 * dist * curvature * curvature,
-        0.0));
-    vec3 bitangent = normalize(vec3(0.0,
-        2.0 * pos.z * curvature * curvature,
-        1.0));
-    vNormal = normalize(normalMatrix * normalize(cross(tangent, bitangent)));
-    
-    gl_Position = projectionMatrix * mvPosition;
-}
-`;
-
-// Enhanced fragment shader with phong lighting
-const fragmentShader = `
-varying vec2 vUv;
-varying vec3 vNormal;
-varying vec3 vViewPosition;
-
-uniform vec3 color;
-uniform float fogNear;
-uniform float fogFar;
-uniform vec3 lightPosition;
-uniform vec3 ambientColor;
-uniform float shininess;
-
-void main() {
-    vec3 normal = normalize(vNormal);
-    vec3 lightDir = normalize(lightPosition - vViewPosition);
-    
-    // Ambient
-    vec3 ambient = ambientColor;
-    
-    // Diffuse
-    float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = diff * color;
-    
-    // Specular
-    vec3 viewDir = normalize(vViewPosition);
-    vec3 reflectDir = reflect(-lightDir, normal);
-    float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
-    vec3 specular = spec * vec3(1.0);
-    
-    // Combine lighting
-    vec3 finalColor = ambient + diffuse + specular;
-    
-    // Add fog
-    float depth = gl_FragCoord.z / gl_FragCoord.w;
-    float fogFactor = smoothstep(fogNear, fogFar, depth);
-    finalColor = mix(finalColor, vec3(1.0), fogFactor * 0.6);
-    
-    gl_FragColor = vec4(finalColor, 1.0);
-}
-`;
-
 // Scene setup
 const scene = new THREE.Scene();
 
@@ -135,11 +58,6 @@ const params = {
     // Motion parameters
     speed: 1.0, // Units per second
     isMoving: true, // Toggle motion
-
-    curvature: 0.003,
-    curvatureDistance: 10.0,
-    fogNear: 1.0,
-    fogFar: 50.0,
     
     // Function to regenerate geometry with new seed
     regenerate: () => {
@@ -170,22 +88,16 @@ function surfaceFunction(u, v, target) {
     target.set(x, y, z);
 }
 
-// Create custom shader material
-const shaderMaterial = new THREE.ShaderMaterial({
-    vertexShader: vertexShader,
-    fragmentShader: fragmentShader,
-    uniforms: {
-        color: { value: new THREE.Color(0xffffff) },
-        curvature: { value: params.curvature },
-        curvatureDistance: { value: params.curvatureDistance },
-        fogNear: { value: params.fogNear },
-        fogFar: { value: params.fogFar }
-    },
-    side: THREE.DoubleSide
+const material = new THREE.MeshPhongMaterial({
+    color: params.color,
+    side: THREE.DoubleSide,
+    flatShading: params.flatShading,
+    wireframe: params.wireframe,
+    shininess: 50
 });
 
 let geometry = new ParametricGeometry(surfaceFunction, params.resolution, params.resolution);
-const surface = new THREE.Mesh(geometry, shaderMaterial);
+const surface = new THREE.Mesh(geometry, material);
 scene.add(surface);
 
 // Setup snowboarder camera position
@@ -250,45 +162,6 @@ const roughFolder = gui.addFolder('Small Features');
 roughFolder.add(params, 'roughScale', 0.1, 2).name('Scale').onChange(updateGeometry);
 roughFolder.add(params, 'roughHeight', 0, 2).name('Height').onChange(updateGeometry);
 
-// Add curve effect controls to GUI
-const curveFolder = gui.addFolder('World Curve Effect');
-curveFolder.add(params, 'curvature', 0, 0.01, 0.0001)
-    .name('Curvature Amount')
-    .onChange(value => {
-        shaderMaterial.uniforms.curvature.value = value;
-    });
-curveFolder.add(params, 'curvatureDistance', 0, 50)
-    .name('Curve Distance')
-    .onChange(value => {
-        shaderMaterial.uniforms.curvatureDistance.value = value;
-    });
-curveFolder.add(params, 'fogNear', 0, 50)
-    .name('Fog Start')
-    .onChange(value => {
-        shaderMaterial.uniforms.fogNear.value = value;
-    });
-curveFolder.add(params, 'fogFar', 0, 100)
-    .name('Fog End')
-    .onChange(value => {
-        shaderMaterial.uniforms.fogFar.value = value;
-    });
-
-// Function to update material color
-function updateMaterialColor(color) {
-    shaderMaterial.uniforms.color.value.set(color);
-}
-
-// Visual settings folder
-const visualFolder = gui.addFolder('Visual Settings');
-visualFolder.add(params, 'wireframe').onChange(value => {
-    material.wireframe = value;
-});
-visualFolder.add(params, 'flatShading').onChange(value => {
-    material.flatShading = value;
-    material.needsUpdate = true;
-});
-visualFolder.addColor(params, 'color').onChange(updateMaterialColor);
-
 const motionFolder = gui.addFolder('Motion Controls');
 motionFolder.add(params, 'speed', 0, 20).name('Speed');
 motionFolder.add(params, 'isMoving').name('Toggle Motion');
@@ -302,6 +175,18 @@ cameraFolder.add(params, 'snowboarderHeight', 0.5, 5)
         snowboarderMarker.position.copy(snowboarderPosition);
     });
 
+const visualFolder = gui.addFolder('Visual Settings');
+visualFolder.add(params, 'wireframe').onChange(value => {
+    material.wireframe = value;
+});
+visualFolder.add(params, 'flatShading').onChange(value => {
+    material.flatShading = value;
+    material.needsUpdate = true;
+});
+visualFolder.addColor(params, 'color').onChange(value => {
+    material.color.set(value);
+});
+
 // Handle camera switching
 document.addEventListener('keydown', (event) => {
     if (event.code === 'Space') {
@@ -314,6 +199,7 @@ document.addEventListener('keydown', (event) => {
 // Add regenerate button
 gui.add(params, 'regenerate').name('Regenerate Terrain');
 
+// Add this before the animation loop
 let lastTime = performance.now();
 
 function animate() {
